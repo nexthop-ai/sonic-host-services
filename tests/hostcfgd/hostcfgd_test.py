@@ -351,6 +351,22 @@ class TestHostcfgdDaemon(TestCase):
                 ]
                 mocked_syslog.syslog.assert_has_calls(expected)
 
+    def test_devicemeta_non_localhost_key_ignored(self):
+        daemon = hostcfgd.HostConfigDaemon()
+        daemon.devmetacfg = mock.MagicMock()
+
+        bmc_data = {
+            'bmc_if_name': 'bmc0',
+            'bmc_if_addr': '169.254.100.2',
+            'bmc_addr': '169.254.100.1',
+            'bmc_net_mask': '255.255.255.252',
+        }
+        daemon.device_metadata_handler('bmc', 'SET', bmc_data)
+
+        daemon.devmetacfg.hostname_update.assert_not_called()
+        daemon.devmetacfg.timezone_update.assert_not_called()
+        daemon.devmetacfg.rsyslog_config.assert_not_called()
+
     def test_mgmtiface_event(self):
         """
         Test handling mgmt events.

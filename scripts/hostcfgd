@@ -2402,6 +2402,9 @@ class HostConfigDaemon:
             syslog.syslog(syslog.LOG_ERR, f"MemoryStatisticsCfg: Error while handling memory statistics update: {e}")
 
     def device_metadata_handler(self, key, op, data):
+        # DEVICE_METADATA has non-localhost rows (e.g. 'bmc' from bmc.json).
+        if key != 'localhost':
+            return
         syslog.syslog(syslog.LOG_INFO, 'DeviceMeta handler...')
         self.devmetacfg.hostname_update(data)
         self.devmetacfg.timezone_update(data)
