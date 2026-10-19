@@ -34,8 +34,27 @@ swsscommon.Select = MockSelect
 swsscommon.SubscriberStateTable = MockSubscriberStateTable
 swsscommon.RestartWaiter = MockRestartWaiter
 
-def syslog_side_effect(pri, msg): 
+def syslog_side_effect(pri, msg):
     print(f"{pri}: {msg}")
+
+
+class FakeConfigDb(object):
+    """Dict-backed CONFIG_DB with ConfigDBConnector semantics for missing rows:
+    get_entry returns {}, mod_entry creates the row, set_entry(None) deletes it."""
+    def __init__(self, tables):
+        self.tables = tables
+
+    def get_entry(self, table, key):
+        return dict(self.tables.get(table, {}).get(key, {}))
+
+    def mod_entry(self, table, key, data):
+        self.tables.setdefault(table, {}).setdefault(key, {}).update(data)
+
+    def set_entry(self, table, key, data):
+        if data is None:
+            self.tables.get(table, {}).pop(key, None)
+        else:
+            self.tables.setdefault(table, {})[key] = dict(data)
 
 class TestFeatureHandler(TestCase):
     """Test methods of `FeatureHandler` class.
@@ -362,6 +381,32 @@ class TestFeatureHandler(TestCase):
 
         feature_handler.sync_feature_scope(feature)
         mock_db.set_entry.assert_called_with(featured.FEATURE_TBL, 'sflow', None)
+
+    def test_sync_state_field_does_not_recreate_deleted_row(self):
+        """A FEATURE row deleted after the startup snapshot must not be written back
+        without a 'state' field."""
+        config_db = FakeConfigDb({featured.FEATURE_TBL: {}})
+        feature_handler = featured.FeatureHandler(config_db, mock.MagicMock(), {}, False)
+
+        with mock.patch.object(feature_handler, 'update_systemd_config'), \
+             mock.patch.object(feature_handler, 'reload_systemd_config'), \
+             mock.patch.object(feature_handler, 'get_systemd_unit_state', return_value=None), \
+             mock.patch.object(feature_handler, 'update_feature_state', return_value=True):
+            feature_handler.sync_state_field({'sflow': {'state': 'enabled'}})
+
+        assert config_db.tables[featured.FEATURE_TBL] == {}
+
+    def test_sync_feature_delay_state_requires_state(self):
+        feature = featured.Feature('sflow', {'state': 'enabled', 'delayed': 'True'})
+        for entry, expected in [
+            ({}, {}),
+            ({'has_global_scope': 'True'}, {'has_global_scope': 'True'}),
+            ({'state': 'enabled'}, {'state': 'enabled', 'delayed': 'True'}),
+        ]:
+            config_db = FakeConfigDb({featured.FEATURE_TBL: {'sflow': entry} if entry else {}})
+            feature_handler = featured.FeatureHandler(config_db, mock.MagicMock(), {}, False)
+            feature_handler.sync_feature_delay_state(feature)
+            assert config_db.get_entry(featured.FEATURE_TBL, 'sflow') == expected, entry
 
     def test_sync_state_field_two_phase_ordering(self):
         """Verify all systemd configs are written (Phase 1) before any service

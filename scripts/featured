@@ -683,7 +683,12 @@ class FeatureHandler(object):
 
     def sync_feature_delay_state(self, feature):
         current_entry = self._config_db.get_entry('FEATURE', feature.name)
-        current_feature_delay_state = current_entry.get('delayed') if current_entry else None
+
+        # Entry deleted (or left partial) by a concurrent deregister — do not recreate it.
+        if not current_entry or 'state' not in current_entry:
+            return
+
+        current_feature_delay_state = current_entry.get('delayed')
 
         if str(feature.delayed) == str(current_feature_delay_state):
             return
