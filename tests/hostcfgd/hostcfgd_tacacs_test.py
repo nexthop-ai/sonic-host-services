@@ -236,3 +236,32 @@ class TestHostcfgdTACACS(TestCase):
             ]
             for expected_call in expected:
                 assert expected_call in mocked_syslog.mock_calls, f"Expected call {expected_call} not found"
+
+    @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
+    def test_hostcfgd_aaa_debug_cleared_on_delete(self, test_name, test_data):
+        """
+            Removing the debug field or deleting AAA|authentication turns debug off
+            in the rendered TACACS+ config
+        """
+        config_name = "config_db_local"
+        op_path = output_path + "/" + test_name + "_" + config_name
+        sop_path = sample_output_path + "/" +  test_name + "_" + config_name
+        host_config_daemon = self.mock_hostcfgd(test_data, config_name, op_path, sop_path)
+        host_config_daemon.register_callbacks()
+        aaa_callback = host_config_daemon.config_db.handlers['AAA']
+
+        def nss_debug_on():
+            with open(hostcfgd.NSS_TACPLUS_CONF) as f:
+                return "debug=on" in f.read().splitlines()
+
+        aaa_callback('AAA', 'authentication', {'login': 'tacacs+,local', 'debug': 'true'})
+        self.assertTrue(nss_debug_on())
+
+        aaa_callback('AAA', 'authentication', {'login': 'tacacs+,local'})
+        self.assertFalse(nss_debug_on())
+
+        aaa_callback('AAA', 'authentication', {'login': 'tacacs+,local', 'debug': 'true'})
+        self.assertTrue(nss_debug_on())
+
+        aaa_callback('AAA', 'authentication', None)
+        self.assertFalse(nss_debug_on())

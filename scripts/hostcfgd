@@ -516,8 +516,9 @@ class AaaCfg(object):
             self.authentication = data
             if 'failthrough' in data:
                 self.authentication['failthrough'] = is_true(data['failthrough'])
-            if 'debug' in data:
-                self.debug = is_true(data['debug'])
+            # A deleted row arrives as {}. The default is a string because
+            # is_true() logs an error for non-string input.
+            self.debug = is_true(data.get('debug', 'false'))
         if key == 'authorization':
             self.authorization = data
         if key == 'accounting':
