@@ -11,7 +11,7 @@ from parameterized import parameterized
 from unittest import TestCase, mock
 from sonic_py_common.general import getstatusoutput_noshell
 from tests.hostcfgd.test_tacacs_vectors import HOSTCFGD_TEST_TACACS_VECTOR
-from tests.common.mock_configdb import MockConfigDb, MockDBConnector
+from tests.common.mock_configdb import MockConfigDb, MockDBConnector, MockDefaultValueProvider
 
 test_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 modules_path = os.path.dirname(test_path)
@@ -253,3 +253,178 @@ class TestHostcfgdTACACS(TestCase):
             ]
             for expected_call in expected:
                 assert expected_call in mocked_syslog.mock_calls, f"Expected call {expected_call} not found"
+<<<<<<< HEAD
+=======
+
+    @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
+    def test_hostcfgd_aaa_debug_cleared_on_delete(self, test_name, test_data):
+        """
+            Removing the debug field or deleting AAA|authentication turns debug off
+            in the rendered TACACS+ config
+        """
+        config_name = "config_db_local"
+        op_path = output_path + "/" + test_name + "_" + config_name
+        sop_path = sample_output_path + "/" +  test_name + "_" + config_name
+        host_config_daemon = self.mock_hostcfgd(test_data, config_name, op_path, sop_path)
+        host_config_daemon.register_callbacks()
+        aaa_callback = host_config_daemon.config_db.handlers['AAA']
+
+        def nss_debug_on():
+            with open(hostcfgd.NSS_TACPLUS_CONF) as f:
+                return "debug=on" in f.read().splitlines()
+
+        aaa_callback('AAA', 'authentication', {'login': 'tacacs+,local', 'debug': 'true'})
+        self.assertTrue(nss_debug_on())
+
+        aaa_callback('AAA', 'authentication', {'login': 'tacacs+,local'})
+        self.assertFalse(nss_debug_on())
+
+        aaa_callback('AAA', 'authentication', {'login': 'tacacs+,local', 'debug': 'true'})
+        self.assertTrue(nss_debug_on())
+
+        aaa_callback('AAA', 'authentication', None)
+        self.assertFalse(nss_debug_on())
+
+    @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
+    def test_hostcfgd_tacacs_server_yang_defaults(self, test_name, test_data):
+        """
+            A server row without tcp_port or priority, as a client that writes
+            only the fields it sets leaves it, renders with their YANG defaults,
+            and a global timeout still wins over the server's own default
+        """
+        config_name = "config_db_local"
+        op_path = output_path + "/" + test_name + "_" + config_name
+        sop_path = sample_output_path + "/" +  test_name + "_" + config_name
+        host_config_daemon = self.mock_hostcfgd(test_data, config_name, op_path, sop_path)
+        host_config_daemon.register_callbacks()
+        aaa_callback = host_config_daemon.config_db.handlers['AAA']
+        global_callback = host_config_daemon.config_db.handlers['TACPLUS']
+        server_callback = host_config_daemon.config_db.handlers['TACPLUS_SERVER']
+
+        aaa_callback('AAA', 'authentication', {'login': 'tacacs+,local'})
+        global_callback('TACPLUS', 'global', {'passkey': 'dellsonic', 'timeout': '3'})
+        server_callback('TACPLUS_SERVER', '10.10.49.39', {'vrf': 'default'})
+
+        with open(hostcfgd.NSS_TACPLUS_CONF) as f:
+            self.assertIn("server=10.10.49.39:49,secret=dellsonic,timeout=3,vrf=default", f.read().splitlines())
+        with open(hostcfgd.PAM_AUTH_CONF) as f:
+            self.assertIn("server=10.10.49.39:49 secret=dellsonic login=pap timeout=3 ", f.read())
+
+    @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
+    def test_hostcfgd_tacacs_server_without_fields(self, test_name, test_data):
+        """
+            A server row with no fields, at startup or added later, renders on its
+            YANG defaults, and only deleting the row removes it
+        """
+        config_name = "config_db_local"
+        op_path = output_path + "/" + test_name + "_" + config_name
+        sop_path = sample_output_path + "/" +  test_name + "_" + config_name
+        host_config_daemon = self.mock_hostcfgd(test_data, config_name, op_path, sop_path)
+        aaa = {'authentication': {'login': 'tacacs+,local'}}
+        tacacs_global = {'global': {'passkey': 'dellsonic'}}
+        host_config_daemon.aaacfg.load(aaa, tacacs_global, {'10.10.49.40': {}}, {}, {}, {}, {})
+        host_config_daemon.register_callbacks()
+        server_callback = host_config_daemon.config_db.handlers['TACPLUS_SERVER']
+
+        def nss_servers():
+            with open(hostcfgd.NSS_TACPLUS_CONF) as f:
+                return [line for line in f.read().splitlines() if line.startswith("server=")]
+
+        self.assertEqual(nss_servers(), ["server=10.10.49.40:49,secret=dellsonic,timeout=5"])
+
+        server_callback('TACPLUS_SERVER', '10.10.49.41', {})
+        self.assertEqual(sorted(nss_servers()), ["server=10.10.49.40:49,secret=dellsonic,timeout=5",
+                                                 "server=10.10.49.41:49,secret=dellsonic,timeout=5"])
+
+        server_callback('TACPLUS_SERVER', '10.10.49.40', None)
+        self.assertEqual(nss_servers(), ["server=10.10.49.41:49,secret=dellsonic,timeout=5"])
+
+    @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
+    def test_hostcfgd_tacacs_server_yang_default_under_global(self, test_name, test_data):
+        """
+            A server's own YANG default applies until the global row sets that
+            field, whatever the global table's YANG default is
+        """
+        class Provider(MockDefaultValueProvider):
+            DEFAULTS = dict(MockDefaultValueProvider.DEFAULTS,
+                            TACPLUS_SERVER=dict(MockDefaultValueProvider.DEFAULTS['TACPLUS_SERVER'], timeout='7'))
+
+        config_name = "config_db_local"
+        op_path = output_path + "/" + test_name + "_" + config_name
+        sop_path = sample_output_path + "/" +  test_name + "_" + config_name
+        with mock.patch.object(swsscommon, 'DefaultValueProvider', Provider):
+            host_config_daemon = self.mock_hostcfgd(test_data, config_name, op_path, sop_path)
+        host_config_daemon.register_callbacks()
+        aaa_callback = host_config_daemon.config_db.handlers['AAA']
+        global_callback = host_config_daemon.config_db.handlers['TACPLUS']
+        server_callback = host_config_daemon.config_db.handlers['TACPLUS_SERVER']
+
+        def nss_servers():
+            with open(hostcfgd.NSS_TACPLUS_CONF) as f:
+                return [line for line in f.read().splitlines() if line.startswith("server=")]
+
+        aaa_callback('AAA', 'authentication', {'login': 'tacacs+,local'})
+        global_callback('TACPLUS', 'global', {'passkey': 'dellsonic'})
+        server_callback('TACPLUS_SERVER', '10.10.49.44', {})
+        self.assertEqual(nss_servers(), ["server=10.10.49.44:49,secret=dellsonic,timeout=7"])
+
+        global_callback('TACPLUS', 'global', {'passkey': 'dellsonic', 'timeout': '3'})
+        self.assertEqual(nss_servers(), ["server=10.10.49.44:49,secret=dellsonic,timeout=3"])
+
+    @parameterized.expand(HOSTCFGD_TEST_TACACS_VECTOR)
+    def test_hostcfgd_tacacs_yang_defaults_unavailable(self, test_name, test_data):
+        """
+            When the YANG defaults cannot be read, or swsscommon has no
+            DefaultValueProvider, the error is logged once, the read is not
+            retried, and each server renders on the built-in defaults
+        """
+        config_name = "config_db_local"
+        op_path = output_path + "/" + test_name + "_" + config_name
+        sop_path = sample_output_path + "/" +  test_name + "_" + config_name
+        providers = {
+            'raises': mock.Mock(getDefaultValues=mock.Mock(
+                side_effect=RuntimeError("Open Yang model path /usr/local/yang-models failed"))),
+            'raises_other': mock.Mock(getDefaultValues=mock.Mock(side_effect=SystemError("Unknown exception"))),
+            'empty': mock.Mock(getDefaultValues=mock.Mock(return_value={})),
+            'missing': None,
+        }
+        for name, provider in providers.items():
+            with self.subTest(provider=name):
+                original_syslog = hostcfgd.syslog
+                with mock.patch('hostcfgd.syslog.syslog') as mocked_syslog, \
+                     mock.patch.object(swsscommon, 'DefaultValueProvider') as provider_class:
+                    mocked_syslog.LOG_INFO = original_syslog.LOG_INFO
+                    mocked_syslog.LOG_ERR = original_syslog.LOG_ERR
+                    if provider is None:
+                        del swsscommon.DefaultValueProvider
+                    else:
+                        provider_class.return_value = provider
+                    host_config_daemon = self.mock_hostcfgd(test_data, config_name, op_path, sop_path)
+                    host_config_daemon.register_callbacks()
+                    aaa_callback = host_config_daemon.config_db.handlers['AAA']
+                    global_callback = host_config_daemon.config_db.handlers['TACPLUS']
+                    server_callback = host_config_daemon.config_db.handlers['TACPLUS_SERVER']
+
+                    aaa_callback('AAA', 'authentication', {'login': 'tacacs+,local'})
+                    global_callback('TACPLUS', 'global', {'passkey': 'dellsonic'})
+                    server_callback('TACPLUS_SERVER', '10.10.49.42', {'vrf': 'default'})
+                    server_callback('TACPLUS_SERVER', '10.10.49.43',
+                                    {'priority': '2', 'tcp_port': '49', 'timeout': '5', 'vrf': 'default'})
+
+                    errors = [c for c in mocked_syslog.mock_calls
+                              if c.args and c.args[0] == original_syslog.LOG_ERR and "TACACS+" in c.args[1]]
+                    self.assertEqual(len(errors), 1)
+                if provider is not None:
+                    provider.getDefaultValues.assert_called_once()
+
+                with open(hostcfgd.NSS_TACPLUS_CONF) as f:
+                    nss_servers = [line for line in f.read().splitlines() if line.startswith("server=")]
+                self.assertEqual(nss_servers, ["server=10.10.49.43:49,secret=dellsonic,timeout=5,vrf=default",
+                                               "server=10.10.49.42:49,secret=dellsonic,timeout=5,vrf=default"])
+                with open(hostcfgd.PAM_AUTH_CONF) as f:
+                    pam_servers = [line.split("pam_tacplus.so ")[1] for line in f.read().splitlines()
+                                   if "pam_tacplus.so " in line]
+                self.assertEqual(pam_servers,
+                                 ["server=10.10.49.43:49 secret=dellsonic login=pap timeout=5  vrf=default   try_first_pass",
+                                  "server=10.10.49.42:49 secret=dellsonic login=pap timeout=5  vrf=default   try_first_pass"])
+>>>>>>> d09d571 (NOS-20736: [hostcfgd] Take a TACACS+ server's defaults from its YANG model (#282))

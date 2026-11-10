@@ -164,3 +164,17 @@ class MockDBConnector():
         if key not in self.data:
             self.data[key] = {}
         self.data[key][field] = value
+
+
+class MockDefaultValueProvider():
+    """
+        Mock of swsscommon's DefaultValueProvider, serving the defaults
+        sonic-system-tacacs.yang declares in place of the installed YANG models
+    """
+    DEFAULTS = {
+        'TACPLUS': {'auth_type': 'pap', 'timeout': '5'},
+        'TACPLUS_SERVER': {'priority': '1', 'tcp_port': '49', 'timeout': '5', 'auth_type': 'pap'},
+    }
+
+    def getDefaultValues(self, table, key):
+        return dict(self.DEFAULTS.get(table, {}))

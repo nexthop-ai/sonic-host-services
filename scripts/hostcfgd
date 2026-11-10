@@ -91,7 +91,12 @@ LIMITS_CONF = "/etc/security/limits.conf"
 TACPLUS_SERVER_PASSKEY_DEFAULT = ""
 TACPLUS_SERVER_TIMEOUT_DEFAULT = "5"
 TACPLUS_SERVER_AUTH_TYPE_DEFAULT = "pap"
+<<<<<<< HEAD
 TACPLUS_TRACEID_AUTHORIZATION_DEFAULT = False
+=======
+TACPLUS_SERVER_TCP_PORT_DEFAULT = "49"
+TACPLUS_SERVER_PRIORITY_DEFAULT = "1"
+>>>>>>> d09d571 (NOS-20736: [hostcfgd] Take a TACACS+ server's defaults from its YANG model (#282))
 
 # RADIUS
 RADIUS_SERVER_AUTH_PORT_DEFAULT = "1812"
@@ -459,12 +464,22 @@ class AaaCfg(object):
         self.accounting_default = {
             'login': 'disable',
         }
-        self.tacplus_global_default = {
+        # Under each server's YANG defaults, and all it gets when those cannot be read.
+        self.tacplus_server_default = {
             'auth_type': TACPLUS_SERVER_AUTH_TYPE_DEFAULT,
             'timeout': TACPLUS_SERVER_TIMEOUT_DEFAULT,
             'passkey': TACPLUS_SERVER_PASSKEY_DEFAULT,
+<<<<<<< HEAD
             'traceid_authorization': TACPLUS_TRACEID_AUTHORIZATION_DEFAULT
+=======
+            'tcp_port': TACPLUS_SERVER_TCP_PORT_DEFAULT,
+            'priority': TACPLUS_SERVER_PRIORITY_DEFAULT,
+>>>>>>> d09d571 (NOS-20736: [hostcfgd] Take a TACACS+ server's defaults from its YANG model (#282))
         }
+        provider = getattr(swsscommon, 'DefaultValueProvider', None)
+        if provider is None:
+            syslog.syslog(syslog.LOG_ERR, "TACACS+: swsscommon has no DefaultValueProvider, using built-in defaults")
+        self.yang_defaults = provider() if provider else None
         self.tacplus_global = {}
         self.tacplus_servers = {}
 
@@ -569,8 +584,10 @@ class AaaCfg(object):
             if modify_conf:
                 self.modify_conf_file()
 
-    def tacacs_server_update(self, key, data, modify_conf=True):
-        if data == {}:
+    def tacacs_server_update(self, key, data, modify_conf=True, op="SET"):
+        # A row with no fields is a server on its YANG defaults, so only a DEL
+        # removes one.
+        if op == "DEL":
             if key in self.tacplus_servers:
                 del self.tacplus_servers[key]
         else:
@@ -737,6 +754,23 @@ class AaaCfg(object):
 
         self.check_file_not_empty(filename)
 
+    def tacacs_server_yang_defaults(self, addr):
+        if self.yang_defaults is None:
+            return {}
+        try:
+            defaults = dict(self.yang_defaults.getDefaultValues('TACPLUS_SERVER', addr))
+        except Exception as e:
+            defaults, reason = {}, str(e)
+        else:
+            reason = "none found for TACPLUS_SERVER"
+        # sonic-system-tacacs.yang declares server defaults, so none at all means
+        # the model did not load. The models do not change while hostcfgd runs,
+        # so the read is not retried.
+        if not defaults:
+            syslog.syslog(syslog.LOG_ERR, "TACACS+: cannot read the YANG defaults, using built-in defaults: {}".format(reason))
+            self.yang_defaults = None
+        return defaults
+
     def modify_conf_file(self):
         authentication = self.authentication_default.copy()
         authentication.update(self.authentication)
@@ -744,22 +778,31 @@ class AaaCfg(object):
         authorization.update(self.authorization)
         accounting = self.accounting_default.copy()
         accounting.update(self.accounting)
-        tacplus_global = self.tacplus_global_default.copy()
-        tacplus_global.update(self.tacplus_global)
         ldap_global = self.ldap_global_default.copy()
         ldap_global.update(self.ldap_global)
 
+<<<<<<< HEAD
         if 'src_ip' in tacplus_global and not aaa_server_fields_safe(
                 {'src_ip': tacplus_global['src_ip']}, TACPLUS_CONFIG_TOKEN_FIELDS,
                 token_delimiters=','):
             syslog.syslog(syslog.LOG_ERR, "TACPLUS: invalid source address; ignoring")
             tacplus_global.pop('src_ip')
         src_ip = tacplus_global.get('src_ip')
+=======
+        if 'src_ip' in self.tacplus_global:
+            src_ip = self.tacplus_global['src_ip']
+        else:
+            src_ip = None
+>>>>>>> d09d571 (NOS-20736: [hostcfgd] Take a TACACS+ server's defaults from its YANG model (#282))
 
         servers_conf = []
         if self.tacplus_servers:
             for addr in self.tacplus_servers:
-                server = tacplus_global.copy()
+                # The global settings sit over a server's defaults, so a global
+                # timeout or auth_type reaches a server that sets none.
+                server = self.tacplus_server_default.copy()
+                server.update(self.tacacs_server_yang_defaults(addr))
+                server.update(self.tacplus_global)
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
                 if not aaa_server_fields_safe(
@@ -2572,7 +2615,7 @@ class HostConfigDaemon:
         syslog.syslog(syslog.LOG_INFO, 'SSH Update: key: {}, op: {}, data: {}'.format(key, op, data))
 
     def tacacs_server_handler(self, key, op, data):
-        self.aaacfg.tacacs_server_update(key, data)
+        self.aaacfg.tacacs_server_update(key, data, op=op)
         log_data = copy.deepcopy(data)
         if 'passkey' in log_data:
             log_data['passkey'] = obfuscate(log_data['passkey'])
