@@ -20,6 +20,9 @@ CFG_DB = "CONFIG_DB"
 STATE_DB = "STATE_DB"
 FEATURE_TBL = swsscommon.CFG_FEATURE_TABLE_NAME
 PORT_TBL = swsscommon.APP_PORT_TABLE_NAME
+DEFAULT_HAS_GLOBAL_SCOPE = 'True'
+DEFAULT_HAS_PER_ASIC_SCOPE = 'False'
+DEFAULT_DELAYED = 'False'
 HOSTCFGD_MAX_PRI = 10  # Used to enforce ordering b/w daemons under Hostcfgd
 DEFAULT_SELECT_TIMEOUT = 1000 # 1sec
 PORT_INIT_TIMEOUT_SEC = 180
@@ -86,9 +89,9 @@ class Feature(object):
         self.name = feature_name
         self.state = self._get_feature_table_key_render_value(feature_cfg.get('state'), device_config or {}, ['enabled', 'disabled', 'always_enabled', 'always_disabled'])
         self.auto_restart = feature_cfg.get('auto_restart', 'disabled')
-        self.delayed = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('delayed', 'False'), device_config or {}, ['True', 'False']))
-        self.has_global_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_global_scope', 'True'), device_config or {}, ['True', 'False']))
-        self.has_per_asic_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_per_asic_scope', 'False'), device_config or {}, ['True', 'False']))
+        self.delayed = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('delayed', DEFAULT_DELAYED), device_config or {}, ['True', 'False']))
+        self.has_global_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_global_scope', DEFAULT_HAS_GLOBAL_SCOPE), device_config or {}, ['True', 'False']))
+        self.has_per_asic_scope = safe_eval(self._get_feature_table_key_render_value(feature_cfg.get('has_per_asic_scope', DEFAULT_HAS_PER_ASIC_SCOPE), device_config or {}, ['True', 'False']))
         self.has_per_dpu_scope = safe_eval(feature_cfg.get('has_per_dpu_scope', 'False'))
 
     def _get_feature_table_key_render_value(self, configuration, device_config, expected_values):
@@ -385,6 +388,10 @@ class FeatureHandler(object):
     def _conditional_update_scope(db, feature_name, new_per_asic, new_global):
         """Write scope fields to a CONFIG_DB only when the values have actually changed.
 
+        An absent field is treated as its default value, so nothing is injected
+        into an entry that never carried the scope fields (e.g. a row created by
+        an operator with only 'state').
+
         Args:
             db: ConfigDBConnector instance (host or namespace).
             feature_name (str): Name of the feature entry to update.
@@ -396,9 +403,9 @@ class FeatureHandler(object):
         """
         current_entry = db.get_entry(FEATURE_TBL, feature_name) or {}
         update_fields = {}
-        if current_entry.get('has_per_asic_scope') != new_per_asic:
+        if current_entry.get('has_per_asic_scope', DEFAULT_HAS_PER_ASIC_SCOPE) != new_per_asic:
             update_fields['has_per_asic_scope'] = new_per_asic
-        if current_entry.get('has_global_scope') != new_global:
+        if current_entry.get('has_global_scope', DEFAULT_HAS_GLOBAL_SCOPE) != new_global:
             update_fields['has_global_scope'] = new_global
         if update_fields:
             db.mod_entry(FEATURE_TBL, feature_name, update_fields)
@@ -764,14 +771,24 @@ class FeatureHandler(object):
 
     def sync_feature_delay_state(self, feature):
         current_entry = self._config_db.get_entry('FEATURE', feature.name)
+<<<<<<< HEAD
         current_feature_delay_state = current_entry.get('delayed') if current_entry else None
+=======
 
-        if str(feature.delayed) == str(current_feature_delay_state):
+        # Entry deleted (or left partial) by a concurrent deregister — do not recreate it.
+        if not current_entry or 'state' not in current_entry:
             return
 
-        self._config_db.mod_entry('FEATURE', feature.name, {'delayed': str(feature.delayed)})
+        new_delayed = str(feature.delayed)
+>>>>>>> 43572a8 (NOS-15456: [featured] Do not inject scope fields into FEATURE rows that never had them (#296))
+
+        if current_entry.get('delayed', DEFAULT_DELAYED) != new_delayed:
+            self._config_db.mod_entry('FEATURE', feature.name, {'delayed': new_delayed})
+
         for ns, db in self.ns_cfg_db.items():
-            db.mod_entry('FEATURE', feature.name, {'delayed': str(feature.delayed)})
+            ns_entry = db.get_entry('FEATURE', feature.name) or {}
+            if ns_entry.get('delayed', DEFAULT_DELAYED) != new_delayed:
+                db.mod_entry('FEATURE', feature.name, {'delayed': new_delayed})
 
     def set_feature_state(self, feature, state):
         self._feature_state_table.set(feature.name, [('state', state)])

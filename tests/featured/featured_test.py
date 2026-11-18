@@ -396,6 +396,62 @@ class TestFeatureHandler(TestCase):
         feature_handler.sync_feature_scope(feature)
         mock_db.set_entry.assert_called_with(featured.FEATURE_TBL, 'sflow', None)
 
+<<<<<<< HEAD
+=======
+    def test_sync_state_field_does_not_recreate_deleted_row(self):
+        """A FEATURE row deleted after the startup snapshot must not be written back
+        without a 'state' field."""
+        config_db = FakeConfigDb({featured.FEATURE_TBL: {}})
+        feature_handler = featured.FeatureHandler(config_db, mock.MagicMock(), {}, False)
+
+        with mock.patch.object(feature_handler, 'update_systemd_config'), \
+             mock.patch.object(feature_handler, 'reload_systemd_config'), \
+             mock.patch.object(feature_handler, 'get_systemd_unit_state', return_value=None), \
+             mock.patch.object(feature_handler, 'update_feature_state', return_value=True):
+            feature_handler.sync_state_field({'sflow': {'state': 'enabled'}})
+
+        assert config_db.tables[featured.FEATURE_TBL] == {}
+
+    def test_sync_feature_delay_state_requires_state(self):
+        feature = featured.Feature('sflow', {'state': 'enabled', 'delayed': 'True'})
+        for entry, expected in [
+            ({}, {}),
+            ({'has_global_scope': 'True'}, {'has_global_scope': 'True'}),
+            ({'state': 'enabled'}, {'state': 'enabled', 'delayed': 'True'}),
+        ]:
+            config_db = FakeConfigDb({featured.FEATURE_TBL: {'sflow': entry} if entry else {}})
+            feature_handler = featured.FeatureHandler(config_db, mock.MagicMock(), {}, False)
+            feature_handler.sync_feature_delay_state(feature)
+            assert config_db.get_entry(featured.FEATURE_TBL, 'sflow') == expected, entry
+
+    def test_sync_feature_delay_state_absent_field_is_default(self):
+        """An absent 'delayed' counts as its default, so a bare row is left untouched."""
+        feature = featured.Feature('sflow', {'state': 'enabled'})
+        config_db = FakeConfigDb({featured.FEATURE_TBL: {'sflow': {'state': 'enabled'}}})
+        feature_handler = featured.FeatureHandler(config_db, mock.MagicMock(), {}, False)
+        mock_ns_db = mock.MagicMock()
+        mock_ns_db.get_entry = mock.MagicMock(return_value={'state': 'enabled'})
+        feature_handler.ns_cfg_db = {'asic0': mock_ns_db}
+
+        feature_handler.sync_feature_delay_state(feature)
+
+        assert config_db.get_entry(featured.FEATURE_TBL, 'sflow') == {'state': 'enabled'}
+        mock_ns_db.mod_entry.assert_not_called()
+
+    def test_sync_feature_delay_state_namespace_compared_individually(self):
+        """A stale namespace row is still written when the host row already matches."""
+        feature = featured.Feature('sflow', {'state': 'enabled', 'delayed': 'True'})
+        config_db = FakeConfigDb({featured.FEATURE_TBL: {'sflow': {'state': 'enabled', 'delayed': 'True'}}})
+        feature_handler = featured.FeatureHandler(config_db, mock.MagicMock(), {}, False)
+        mock_ns_db = mock.MagicMock()
+        mock_ns_db.get_entry = mock.MagicMock(return_value={'state': 'enabled', 'delayed': 'False'})
+        feature_handler.ns_cfg_db = {'asic0': mock_ns_db}
+
+        feature_handler.sync_feature_delay_state(feature)
+
+        mock_ns_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {'delayed': 'True'})
+
+>>>>>>> 43572a8 (NOS-15456: [featured] Do not inject scope fields into FEATURE rows that never had them (#296))
     def test_sync_state_field_two_phase_ordering(self):
         """Verify all systemd configs are written (Phase 1) before any service
         is started (Phase 2), with exactly one daemon-reload in between."""
@@ -664,7 +720,8 @@ class TestFeatureHandler(TestCase):
     @mock.patch('featured.FeatureHandler.sync_feature_delay_state', mock.MagicMock())
     @mock.patch('featured.FeatureHandler.get_systemd_unit_state', mock.MagicMock(return_value=""))
     def test_sync_feature_scope_conditional_write(self):
-        """Verify sync_feature_scope only writes when scope values differ or entry is missing."""
+        """Verify sync_feature_scope writes only a scope field whose derived value differs
+        from the stored one, counting an absent field (or a missing entry) as its default."""
         mock_db = mock.MagicMock()
         mock_db.get_entry = mock.MagicMock()
         mock_db.mod_entry = mock.MagicMock()
@@ -696,13 +753,27 @@ class TestFeatureHandler(TestCase):
         mock_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {'has_per_asic_scope': 'False'})
         mock_db.mod_entry.reset_mock()
 
-        # Entry missing (None) -> write both fields in single call
+        # Entry missing (None) and derived values match the defaults -> no write
         mock_db.get_entry.return_value = None
         feature_handler.sync_feature_scope(feature)
-        mock_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {
-            'has_per_asic_scope': 'False',
+        mock_db.mod_entry.assert_not_called()
+        mock_db.mod_entry.reset_mock()
+
+        # Fields absent from the entry and derived values match the defaults -> no write
+        mock_db.get_entry.return_value = {'state': 'enabled'}
+        feature_handler.sync_feature_scope(feature)
+        mock_db.mod_entry.assert_not_called()
+        mock_db.mod_entry.reset_mock()
+
+        # Fields absent but a derived value differs from its default -> write only that field
+        feature = featured.Feature('sflow', {
+            'state': 'enabled',
             'has_global_scope': 'True',
+            'has_per_asic_scope': 'True',
         })
+        mock_db.get_entry.return_value = {'state': 'enabled'}
+        feature_handler.sync_feature_scope(feature)
+        mock_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {'has_per_asic_scope': 'True'})
 
     @mock.patch('featured.FeatureHandler.update_systemd_config', mock.MagicMock())
     @mock.patch('featured.FeatureHandler.update_feature_state', mock.MagicMock())
@@ -769,6 +840,44 @@ class TestFeatureHandler(TestCase):
                 'has_per_asic_scope': 'True',
                 'has_global_scope': 'True',
             })
+
+        # Reset for next scenario
+        for mock_ns_db in [mock_ns_db_0, mock_ns_db_1]:
+            mock_ns_db.mod_entry.reset_mock()
+
+        # Namespace rows are bare but the host row carries a non-default value ->
+        # only the non-default field is written into the namespaces
+        for mock_ns_db in [mock_ns_db_0, mock_ns_db_1]:
+            mock_ns_db.get_entry.return_value = {'state': 'enabled'}
+        feature_handler.sync_feature_scope(feature)
+
+        mock_db.mod_entry.assert_not_called()
+        for mock_ns_db in [mock_ns_db_0, mock_ns_db_1]:
+            mock_ns_db.mod_entry.assert_called_once_with(featured.FEATURE_TBL, 'sflow', {
+                'has_per_asic_scope': 'True',
+            })
+
+        # Reset for next scenario
+        for mock_ns_db in [mock_ns_db_0, mock_ns_db_1]:
+            mock_ns_db.mod_entry.reset_mock()
+
+        # Namespace rows bare and derived values match the defaults -> no write
+        feature = featured.Feature('sflow', {
+            'state': 'enabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False',
+        })
+        mock_db.get_entry.return_value = {
+            'state': 'enabled',
+            'has_per_asic_scope': 'False',
+            'has_global_scope': 'True',
+        }
+        feature_handler.sync_feature_scope(feature)
+
+        mock_db.mod_entry.assert_not_called()
+        mock_db.set_entry.assert_not_called()
+        for mock_ns_db in [mock_ns_db_0, mock_ns_db_1]:
+            mock_ns_db.mod_entry.assert_not_called()
 
 
 class TestHandlerDeregistration(TestCase):
