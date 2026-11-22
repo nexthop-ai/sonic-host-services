@@ -850,6 +850,12 @@ class ControlPlaneAclManager(logger.Logger):
                     dst_ports = []
 
                 acl_rules = {}
+                # acl_rules holds one rule per PRIORITY, so a second rule with the same
+                # PRIORITY replaces the first. Track the rule names seen for each PRIORITY
+                # (in the order read) and the name of the rule currently stored for it, so
+                # the lost rules can be reported below.
+                rule_ids_by_priority = {}
+                stored_rule_id = {}
 
                 for ((rule_table_name, rule_id), rule_props) in self._rules_db_info.items():
                     rule_props = {k.upper(): v for k,v in rule_props.items()}
@@ -863,6 +869,8 @@ class ControlPlaneAclManager(logger.Logger):
                         except KeyError:
                             self.log_error("rule_props for rule_id {} does not have key 'PRIORITY'!".format(rule_id))
                             continue
+                        rule_ids_by_priority.setdefault(rule_props["PRIORITY"], []).append(rule_id)
+                        stored_rule_id[rule_props["PRIORITY"]] = rule_id
 
                         # If we haven't determined the IP version for this ACL table yet,
                         # try to do it now. We attempt to determine heuristically based on
@@ -890,10 +898,26 @@ class ControlPlaneAclManager(logger.Logger):
                             self.log_error("CtrlPlane ACL table {} is a IPv4 based table and rule {} is a IPV6 rule! Ignoring rule."
                                            .format(table_name, rule_id))
                             acl_rules.pop(rule_props["PRIORITY"])
+                            stored_rule_id.pop(rule_props["PRIORITY"], None)
                         elif (self.is_rule_ipv4(rule_props) and (table_ip_version == 6)):
                             self.log_error("CtrlPlane ACL table {} is a IPv6 based table and rule {} is a IPV4 rule! Ignroing rule."
                                            .format(table_name, rule_id))
                             acl_rules.pop(rule_props["PRIORITY"])
+                            stored_rule_id.pop(rule_props["PRIORITY"], None)
+
+                # Report rules that were lost because another rule of this table has the
+                # same PRIORITY. The config is accepted as is; this only makes it visible.
+                for priority, rule_ids in rule_ids_by_priority.items():
+                    if len(rule_ids) < 2:
+                        continue
+                    applied_rule_id = stored_rule_id.get(priority)
+                    if applied_rule_id is not None:
+                        outcome = "rule {} is applied and the others are ignored".format(applied_rule_id)
+                    else:
+                        outcome = "none of them is applied"
+                    self.log_warning("CtrlPlane ACL table {}: rules {} have the same PRIORITY {}. "
+                                     "Only one rule per PRIORITY is applied: {}."
+                                     .format(table_name, ", ".join(rule_ids), priority, outcome))
 
                 # If we were unable to determine whether this ACL table contains
                 # IPv4 or IPv6 rules, log a message and skip processing this table.
